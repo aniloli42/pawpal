@@ -23,7 +23,10 @@ User can able to delete tasks
 **b. Design changes**
 
 - Did your design change during implementation?
+    - Yes
 - If yes, describe at least one change and why you made it.
+    - During creating UML using Claude, I realized that their is no implementation of id in the object which will create issue in long run, so I instructed to add id in each object.
+    - Also, Implemented get each item by id method in each class.
 
 ---
 
