@@ -25,8 +25,13 @@ User can able to delete tasks
 - Did your design change during implementation?
     - Yes
 - If yes, describe at least one change and why you made it.
-    - During creating UML using Claude, I realized that their is no implementation of id in the object which will create issue in long run, so I instructed to add id in each object.
-    - Also, Implemented get each item by id method in each class.
+    - **Added unique IDs to every object.** The initial design had no `id` field on any class. Without IDs, removing or looking up a specific pet or task by name would cause conflicts when two objects share the same name (e.g. two pets named "Max"). Adding a UUID to each class solved this cleanly.
+    - **Added get-by-ID methods to every class.** Once we had IDs, we needed a way to retrieve a specific entry without scanning everything manually. Each class now has a `get_pet(pet_id)`, `get_task(task_id)`, etc. method so lookups are consistent and encapsulated.
+    - **Added foreign key reference IDs.** `Pet` stores `pet_id`, `Task` stores `pet_id`, and `Schedule` stores `pet_id`. This lets each object know which parent it belongs to without holding a full object reference, making serialization and lookups simpler.
+    - **Moved task creation to Owner, not Pet.** Originally the design had task management methods on `Pet`. But since tasks must be created with the correct `pet_id` set, it made more sense for `Owner` to be the factory — it knows which pets it has, so it can set the FK correctly and then delegate storage to `Pet.add_task()`.
+    - **Extracted a Scheduler class (SOLID — SRP + OCP).** The original `Schedule` class was responsible for both storing the result and running the scheduling algorithm. This violates the Single Responsibility Principle. We extracted a separate `Scheduler` class whose only job is to run the algorithm and return a `Schedule`. This also makes it easy to swap in a different scheduling strategy later without touching `Schedule` at all.
+    - **Schedule became a pure result container.** After extracting `Scheduler`, `Schedule` no longer has `generate()` or `available_tasks` as inputs. It only stores the output (scheduled tasks, skipped tasks, total duration) and provides `explain()` and `to_dict()`. This makes it clean and focused.
+
 
 ---
 
