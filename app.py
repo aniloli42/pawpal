@@ -23,7 +23,7 @@ st.divider()
 # Session state — create Owner only once per session
 # ---------------------------------------------------------------------------
 
-if "owner" not in st.session_state:
+if "owner" not in st.session_state or (st.session_state.owner is not None and not hasattr(st.session_state.owner, "start_hour")):
     st.session_state.owner = None   # will be set after setup form
 
 owner: Owner | None = st.session_state.owner
@@ -36,22 +36,27 @@ st.subheader("👤 Owner Setup")
 
 if owner is None:
     with st.form("owner_form"):
-        owner_name       = st.text_input("Your name", value="Jordan")
-        available_minutes = st.number_input(
+        owner_name        = st.text_input("Your name", value="Jordan")
+        colA, colB = st.columns(2)
+        available_minutes = colA.number_input(
             "Daily time budget (minutes)", min_value=10, max_value=480, value=90, step=10
+        )
+        start_hour = colB.number_input(
+            "Day start hour (0-23)", min_value=0, max_value=23, value=8, step=1
         )
         submitted = st.form_submit_button("Start →")
 
     if submitted:
-        st.session_state.owner = Owner(name=owner_name, available_minutes=available_minutes)
+        st.session_state.owner = Owner(name=owner_name, available_minutes=available_minutes, start_hour=start_hour)
         st.rerun()
     st.stop()   # nothing else renders until owner is created
 
 else:
-    col1, col2, col3 = st.columns([3, 2, 1])
+    col1, col2, col3, col4 = st.columns([2, 1.5, 1.5, 1])
     col1.markdown(f"**{owner.name}**")
     col2.markdown(f"⏱ {owner.available_minutes} min/day")
-    if col3.button("Reset", help="Clear session and start over"):
+    col3.markdown(f"🌅 Starts {owner.start_hour:02d}:00")
+    if col4.button("Reset", help="Clear session and start over"):
         del st.session_state.owner
         st.rerun()
 
@@ -112,14 +117,27 @@ selected_pet = pet_options[selected_pet_name]
 with st.expander("Add a task", expanded=True):
     with st.form("add_task_form"):
         col1, col2 = st.columns(2)
-        task_title    = col1.text_input("Task title", value="Morning Walk")
-        duration      = col2.number_input("Duration (min)", min_value=1, max_value=240, value=20)
-        col3, col4    = st.columns(2)
-        priority      = col3.selectbox("Priority", ["high", "medium", "low"])
-        category      = col4.selectbox("Category",
-                          ["walk", "feeding", "meds", "grooming", "enrichment", "other"])
-        notes         = st.text_input("Notes (optional)", value="")
-        add_task_btn  = st.form_submit_button("Add task")
+        task_title = col1.text_input("Task title", value="Morning Walk")
+        duration   = col2.number_input("Duration (min)", min_value=1, max_value=240, value=20)
+
+        col3, col4 = st.columns(2)
+        priority = col3.selectbox("Priority", ["high", "medium", "low"])
+        category = col4.selectbox(
+            "Category", ["walk", "feeding", "meds", "grooming", "enrichment", "other"]
+        )
+
+        col5, col6 = st.columns(2)
+        recurrence = col5.selectbox(
+            "Recurrence", ["none", "daily", "weekdays", "weekly"],
+            help="How often this task repeats. 'none' = one-time only.",
+        )
+        preferred_time_slot = col6.selectbox(
+            "Preferred slot", ["any", "morning", "afternoon", "evening"],
+            help="Soft preference used for conflict detection.",
+        )
+
+        notes        = st.text_input("Notes (optional)", value="")
+        add_task_btn = st.form_submit_button("Add task")
 
     if add_task_btn:
         if task_title.strip():
@@ -130,20 +148,58 @@ with st.expander("Add a task", expanded=True):
                 priority=priority,
                 category=category,
                 notes=notes.strip(),
+                recurrence=recurrence,
+                preferred_time_slot=preferred_time_slot,
             )
             st.success(f"Added **{task_title}** to {selected_pet.name}.")
             st.rerun()
         else:
             st.warning("Please enter a task title.")
 
-# Show existing tasks for selected pet
-tasks = selected_pet.get_tasks()
+# --- Filter & Sort controls ---
+st.markdown("##### Filter & Sort")
+fc1, fc2, fc3 = st.columns(3)
+
+filter_status = fc1.selectbox(
+    "Filter by status",
+    ["all", "pending", "in_progress", "completed"],
+    key="filter_status",
+)
+sort_by = fc2.selectbox(
+    "Sort by",
+    ["priority", "duration", "category", "title"],
+    key="sort_by",
+)
+show_all_pets = fc3.checkbox(
+    "Show all pets", value=False, key="all_pets_tasks",
+    help="Display tasks from every pet, not just the selected one.",
+)
+
+status_filter = None if filter_status == "all" else filter_status
+pet_id_filter = None if show_all_pets else selected_pet.id
+
+tasks = owner.get_filtered_tasks(
+    pet_id=pet_id_filter, status=status_filter, sort_by=sort_by
+)
+
+# --- Task list ---
 if tasks:
     for task in tasks:
         status_icon = {"pending": "⬜", "in_progress": "🔄", "completed": "✅"}.get(task.status, "⬜")
+        recur_badge = f" 🔁 `{task.recurrence}`" if task.recurrence != "none" else ""
+        slot_badge  = f" 🕐 `{task.preferred_time_slot}`" if task.preferred_time_slot != "any" else ""
+
+        # Show pet name when cross-pet view is active
+        pet_label = ""
+        if show_all_pets:
+            t_pet = next((p for p in pets if p.id == task.pet_id), None)
+            pet_label = f" · 🐾 {t_pet.name}" if t_pet else ""
+
         col1, col2, col3 = st.columns([5, 2, 1])
-        col1.markdown(f"{status_icon} **{task.title}** — {task.duration_minutes} min "
-                      f"[{task.priority}, {task.category}]")
+        col1.markdown(
+            f"{status_icon} **{task.title}**{pet_label} — {task.duration_minutes} min "
+            f"[{task.priority}, {task.category}]{recur_badge}{slot_badge}"
+        )
         new_status = col2.selectbox(
             "Status", ["pending", "in_progress", "completed"],
             index=["pending", "in_progress", "completed"].index(task.status),
@@ -151,13 +207,13 @@ if tasks:
             label_visibility="collapsed",
         )
         if new_status != task.status:
-            task.set_status(new_status)
+            task.set_status(new_status, on_date=str(date.today()))
             st.rerun()
         if col3.button("🗑", key=f"remove_task_{task.id}"):
             owner.remove_task(task.id)
             st.rerun()
 else:
-    st.info(f"No tasks for {selected_pet.name} yet.")
+    st.info("No tasks match the current filter.")
 
 st.divider()
 
@@ -175,20 +231,48 @@ if st.button("Generate schedule 🗓", type="primary"):
         st.warning(f"{sched_pet.name} has no tasks to schedule.")
     else:
         schedule = owner.build_schedule(sched_pet.id, str(date.today()))
-        st.success(f"Schedule built for **{sched_pet.name}** — "
-                   f"{schedule.total_duration_minutes} min used of {owner.available_minutes} min")
 
-        if schedule.scheduled_tasks:
+        # --- Budget summary ---
+        utilization = schedule.total_duration_minutes / owner.available_minutes
+        st.success(
+            f"Schedule built for **{sched_pet.name}** — "
+            f"{schedule.total_duration_minutes} min used of {owner.available_minutes} min "
+            f"({utilization:.0%})"
+        )
+
+        # --- Utilisation hints ---
+        if utilization < 0.5:
+            st.info("💡 You have time to spare — consider adding enrichment tasks!")
+        elif utilization > 0.9:
+            st.warning("⚠️ Schedule is nearly full. Low-priority tasks may be bumped tomorrow.")
+
+        # --- Conflict warnings ---
+        if schedule.conflicts:
+            st.markdown("#### ⚠️ Conflicts Detected")
+            for msg in schedule.conflicts:
+                st.warning(msg)
+
+        # --- Scheduled tasks with time slots ---
+        if schedule.slots:
             st.markdown("#### ✅ Scheduled")
-            for task in schedule.scheduled_tasks:
-                st.markdown(f"- **{task.title}** — {task.duration_minutes} min "
-                            f"[{task.priority} priority · {task.category}]")
+            for slot in schedule.slots:
+                recur_badge = (f" 🔁 `{slot.task.recurrence}`"
+                               if slot.task.recurrence != "none" else "")
+                pref_badge  = (f" 🕐 `{slot.task.preferred_time_slot}`"
+                               if slot.task.preferred_time_slot != "any" else "")
+                st.markdown(
+                    f"- `{slot.time_label(schedule.start_hour)}` **{slot.task.title}** — "
+                    f"{slot.task.duration_minutes} min "
+                    f"[{slot.task.priority} · {slot.task.category}]{recur_badge}{pref_badge}"
+                )
 
+        # --- Unscheduled (skipped) tasks ---
         if schedule.unscheduled_tasks:
             st.markdown("#### ⏭ Skipped (didn't fit in time budget)")
             for task in schedule.unscheduled_tasks:
-                st.markdown(f"- **{task.title}** — {task.duration_minutes} min "
-                            f"[{task.priority} priority]")
+                st.markdown(
+                    f"- **{task.title}** — {task.duration_minutes} min [{task.priority} priority]"
+                )
 
         with st.expander("Full explanation"):
             st.text(schedule.explain())
