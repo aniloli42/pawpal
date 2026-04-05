@@ -46,11 +46,19 @@ class Task:
 
     def is_high_priority(self) -> bool:
         """Returns True if the task priority is 'high'."""
-        pass
+        return self.priority == "high"
 
     def to_dict(self) -> dict:
         """Serializes the task to a plain dictionary."""
-        pass
+        return {
+            "id": self.id,
+            "pet_id": self.pet_id,
+            "title": self.title,
+            "duration_minutes": self.duration_minutes,
+            "priority": self.priority,
+            "category": self.category,
+            "notes": self.notes,
+        }
 
 
 # ---------------------------------------------------------------------------
@@ -118,15 +126,43 @@ class Schedule:
 
     def explain(self) -> str:
         """Returns a human-readable explanation of which tasks were chosen and why."""
-        pass
+        lines = [f"📅 Schedule for {self.date}", ""]
+
+        if self.scheduled_tasks:
+            lines.append(f"✅ Scheduled ({self.total_duration_minutes} min total):")
+            for task in self.scheduled_tasks:
+                lines.append(
+                    f"  • {task.title} — {task.duration_minutes} min "
+                    f"[{task.priority} priority, {task.category}]"
+                )
+        else:
+            lines.append("No tasks were scheduled.")
+
+        if self.unscheduled_tasks:
+            lines.append("")
+            lines.append("⏭ Skipped (did not fit in time budget):")
+            for task in self.unscheduled_tasks:
+                lines.append(
+                    f"  • {task.title} — {task.duration_minutes} min "
+                    f"[{task.priority} priority]"
+                )
+
+        return "\n".join(lines)
 
     def get_task(self, task_id: str) -> Optional[Task]:
         """Returns a specific scheduled task by ID, or None if not found."""
-        pass
+        return next((t for t in self.scheduled_tasks if t.id == task_id), None)
 
     def to_dict(self) -> dict:
         """Serializes the full schedule to a plain dictionary."""
-        pass
+        return {
+            "id": self.id,
+            "pet_id": self.pet_id,
+            "date": self.date,
+            "scheduled_tasks": [t.to_dict() for t in self.scheduled_tasks],
+            "unscheduled_tasks": [t.to_dict() for t in self.unscheduled_tasks],
+            "total_duration_minutes": self.total_duration_minutes,
+        }
 
 
 # ---------------------------------------------------------------------------
@@ -141,6 +177,8 @@ class Scheduler:
     (e.g. CategoryScheduler, TimeSlotScheduler) without modifying Schedule or Owner.
     """
 
+    PRIORITY_ORDER: ClassVar[dict] = {"high": 0, "medium": 1, "low": 2}
+
     def generate(self, pet: Pet, available_minutes: int, date: str) -> Schedule:
         """Sorts pet tasks by priority (high → medium → low), fills up to
         available_minutes, and returns a Schedule result object.
@@ -153,7 +191,29 @@ class Scheduler:
         Returns:
             A populated Schedule instance.
         """
-        pass
+        sorted_tasks = sorted(
+            pet.get_tasks(),
+            key=lambda t: self.PRIORITY_ORDER.get(t.priority, 99)
+        )
+
+        scheduled: list[Task] = []
+        unscheduled: list[Task] = []
+        time_used = 0
+
+        for task in sorted_tasks:
+            if time_used + task.duration_minutes <= available_minutes:
+                scheduled.append(task)
+                time_used += task.duration_minutes
+            else:
+                unscheduled.append(task)
+
+        return Schedule(
+            pet_id=pet.id,
+            date=date,
+            scheduled_tasks=scheduled,
+            unscheduled_tasks=unscheduled,
+            total_duration_minutes=time_used,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -195,8 +255,18 @@ class Owner:
         return next((p for p in self.pets if p.id == pet_id), None)
 
     def update_pet(self, pet_id: str, **kwargs) -> None:
-        """Updates attributes of an existing pet by ID."""
-        pass
+        """Updates attributes of an existing pet by ID.
+
+        Raises:
+            ValueError: if pet_id is not found.
+        """
+        allowed = {"name", "species", "breed", "age"}
+        pet = self.get_pet(pet_id)
+        if pet is None:
+            raise ValueError(f"Pet '{pet_id}' not found.")
+        for key, value in kwargs.items():
+            if key in allowed:
+                setattr(pet, key, value)
 
     # --- Task management ---
 
@@ -208,23 +278,57 @@ class Owner:
         Raises:
             ValueError: if pet_id is not found among this owner's pets.
         """
-        pass
+        pet = self.get_pet(pet_id)
+        if pet is None:
+            raise ValueError(f"Pet '{pet_id}' not found.")
+        task = Task(
+            pet_id=pet_id,
+            title=title,
+            duration_minutes=duration_minutes,
+            priority=priority,
+            category=category,
+            notes=notes,
+        )
+        pet.add_task(task)
+        return task
 
     def remove_task(self, task_id: str) -> None:
         """Removes a task by ID from whichever pet holds it."""
-        pass
+        for pet in self.pets:
+            pet.remove_task(task_id)
 
     def get_tasks(self, pet_id: str) -> list[Task]:
-        """Returns all tasks for a specific pet."""
-        pass
+        """Returns all tasks for a specific pet.
+
+        Raises:
+            ValueError: if pet_id is not found.
+        """
+        pet = self.get_pet(pet_id)
+        if pet is None:
+            raise ValueError(f"Pet '{pet_id}' not found.")
+        return pet.get_tasks()
 
     def get_task(self, task_id: str) -> Optional[Task]:
         """Returns a specific task by ID across all pets, or None if not found."""
-        pass
+        for pet in self.pets:
+            task = pet.get_task(task_id)
+            if task is not None:
+                return task
+        return None
 
     def update_task(self, task_id: str, **kwargs) -> None:
-        """Updates attributes of an existing task by ID."""
-        pass
+        """Updates attributes of an existing task by ID.
+
+        Raises:
+            ValueError: if task_id is not found.
+        """
+        allowed = {"title", "duration_minutes", "priority", "category", "notes"}
+        task = self.get_task(task_id)
+        if task is None:
+            raise ValueError(f"Task '{task_id}' not found.")
+        for key, value in kwargs.items():
+            if key in allowed:
+                setattr(task, key, value)
 
     # --- Schedule management ---
 
@@ -234,16 +338,21 @@ class Owner:
         Raises:
             ValueError: if pet_id is not found.
         """
-        pass
+        pet = self.get_pet(pet_id)
+        if pet is None:
+            raise ValueError(f"Pet '{pet_id}' not found.")
+        schedule = self.scheduler.generate(pet, self.available_minutes, date)
+        self.schedules.append(schedule)
+        return schedule
 
     def get_schedules(self, pet_id: str) -> list[Schedule]:
         """Returns all schedules for a specific pet."""
-        pass
+        return [s for s in self.schedules if s.pet_id == pet_id]
 
     def get_schedule(self, schedule_id: str) -> Optional[Schedule]:
         """Returns a specific schedule by ID, or None if not found."""
-        pass
+        return next((s for s in self.schedules if s.id == schedule_id), None)
 
     def remove_schedule(self, schedule_id: str) -> None:
         """Removes a schedule by ID. Silently ignores unknown IDs."""
-        pass
+        self.schedules = [s for s in self.schedules if s.id != schedule_id]
