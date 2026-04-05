@@ -65,6 +65,10 @@ class Task:
             )
         self.status = status
 
+    def mark_complete(self) -> None:
+        """Marks the task as completed. Shortcut for set_status('completed')."""
+        self.status = "completed"
+
     def to_dict(self) -> dict:
         """Serializes the task to a plain dictionary."""
         return {
