@@ -2,17 +2,27 @@
 pawpal_system.py
 Logic layer for PawPal+ — pet care planning assistant.
 
+Owner is the root of the application. There is no PawPal wrapper class.
+The Streamlit app.py will create one Owner instance and work with it directly.
+
+SOLID design:
+  S — Task/Pet = data models; Scheduler = algorithm; Schedule = result; Owner = root
+  O — Scheduler can be subclassed for new strategies without modifying Schedule
+  L — Any Scheduler subclass can replace the default in Owner
+  I — Each class exposes only what its consumers need
+  D — Owner depends on Scheduler abstraction, not a hardcoded algorithm
+
 Classes:
-    Task     — a single pet care activity
-    Pet      — a pet with a list of care tasks
-    Owner    — a pet owner with a daily time budget
-    Schedule — a generated daily care plan for one owner + pet
-    PawPal   — root registry that manages all owners and schedules
+    Task      — a single pet care activity (data)
+    Pet       — a pet and its task list
+    Schedule  — immutable result of a scheduling run (data + explain)
+    Scheduler — scheduling algorithm
+    Owner     — root app user; manages pets, tasks, and schedules
 """
 
 import uuid
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import ClassVar, Optional
 
 
 # ---------------------------------------------------------------------------
@@ -23,8 +33,8 @@ from typing import Optional
 class Task:
     """Represents a single pet care activity."""
 
-    VALID_PRIORITIES = {"low", "medium", "high"}
-    VALID_CATEGORIES = {"walk", "feeding", "meds", "grooming", "enrichment", "other"}
+    VALID_PRIORITIES: ClassVar[set] = {"low", "medium", "high"}
+    VALID_CATEGORIES: ClassVar[set] = {"walk", "feeding", "meds", "grooming", "enrichment", "other"}
 
     pet_id: str
     title: str
@@ -49,9 +59,11 @@ class Task:
 
 @dataclass
 class Pet:
-    """Represents a pet with a list of care tasks."""
+    """Represents a pet with a list of care tasks.
 
-    owner_id: str
+    Responsibility: manage its own task list.
+    """
+
     name: str
     species: str
     breed: str = ""
@@ -60,82 +72,52 @@ class Pet:
     id: str = field(default_factory=lambda: str(uuid.uuid4()), init=False)
 
     def add_task(self, task: Task) -> None:
-        """Adds a care task to this pet."""
-        pass
+        """Appends a task to this pet's list.
+
+        Raises:
+            ValueError: if task.pet_id does not match this pet's id.
+        """
+        if task.pet_id != self.id:
+            raise ValueError(
+                f"Task '{task.title}' belongs to pet '{task.pet_id}', "
+                f"not to this pet '{self.id}'."
+            )
+        self.tasks.append(task)
 
     def remove_task(self, task_id: str) -> None:
-        """Removes a task by its unique ID."""
-        pass
+        """Removes a task by its unique ID. Silently ignores unknown IDs."""
+        self.tasks = [t for t in self.tasks if t.id != task_id]
 
     def get_tasks(self) -> list[Task]:
         """Returns all tasks assigned to this pet."""
-        pass
+        return list(self.tasks)
 
     def get_task(self, task_id: str) -> Optional[Task]:
         """Returns a specific task by ID, or None if not found."""
-        pass
+        return next((t for t in self.tasks if t.id == task_id), None)
 
 
 # ---------------------------------------------------------------------------
-# Owner
-# ---------------------------------------------------------------------------
-
-@dataclass
-class Owner:
-    """Represents a pet owner with a daily time budget and a list of pets."""
-
-    name: str
-    available_minutes: int = 120
-    preferences: list[str] = field(default_factory=list)
-    pets: list[Pet] = field(default_factory=list)
-    id: str = field(default_factory=lambda: str(uuid.uuid4()), init=False)
-
-    def add_pet(self, pet: Pet) -> None:
-        """Adds a pet to the owner's list."""
-        pass
-
-    def remove_pet(self, pet_id: str) -> None:
-        """Removes a pet by its unique ID."""
-        pass
-
-    def get_pets(self) -> list[Pet]:
-        """Returns all pets owned by this owner."""
-        pass
-
-    def get_pet(self, pet_id: str) -> Optional[Pet]:
-        """Returns a specific pet by ID, or None if not found."""
-        pass
-
-
-# ---------------------------------------------------------------------------
-# Schedule
+# Schedule  (result data container — SRP: stores and explains, nothing more)
 # ---------------------------------------------------------------------------
 
 @dataclass
 class Schedule:
-    """Generated daily care plan for one owner + pet combination."""
+    """Immutable result of a scheduling run for one pet.
 
-    owner_id: str
+    Responsibility: store the result and explain it.
+    Does NOT generate itself — that is Scheduler's job (SRP + OCP).
+    """
+
     pet_id: str
     date: str
-    tasks: list[Task]                                                       # input: tasks to schedule from
+    scheduled_tasks: list[Task]
+    unscheduled_tasks: list[Task]
+    total_duration_minutes: int
     id: str = field(default_factory=lambda: str(uuid.uuid4()), init=False)
-    scheduled_tasks: list[Task] = field(default_factory=list, init=False)   # output: tasks that fit
-    unscheduled_tasks: list[Task] = field(default_factory=list, init=False) # output: tasks that didn't fit
-    total_duration_minutes: int = field(default=0, init=False)              # output: total time used
-
-    def generate(self, available_minutes: int) -> None:
-        """
-        Sorts tasks by priority (high → medium → low), then fills the schedule
-        up to available_minutes. Remaining tasks go to unscheduled_tasks.
-        """
-        pass
 
     def explain(self) -> str:
-        """
-        Returns a human-readable explanation of the schedule:
-        which tasks were chosen, why, and what was skipped.
-        """
+        """Returns a human-readable explanation of which tasks were chosen and why."""
         pass
 
     def get_task(self, task_id: str) -> Optional[Task]:
@@ -148,61 +130,120 @@ class Schedule:
 
 
 # ---------------------------------------------------------------------------
-# PawPal  (root registry)
+# Scheduler  (algorithm — SRP + OCP: one job, open to subclassing)
+# ---------------------------------------------------------------------------
+
+class Scheduler:
+    """Encapsulates the scheduling algorithm.
+
+    Responsibility: decide which tasks fit in the time budget and in what order.
+    Open for extension: subclass to implement alternative strategies
+    (e.g. CategoryScheduler, TimeSlotScheduler) without modifying Schedule or Owner.
+    """
+
+    def generate(self, pet: Pet, available_minutes: int, date: str) -> Schedule:
+        """Sorts pet tasks by priority (high → medium → low), fills up to
+        available_minutes, and returns a Schedule result object.
+
+        Args:
+            pet: the pet whose tasks will be scheduled.
+            available_minutes: the owner's daily time budget.
+            date: ISO-format date string for this schedule.
+
+        Returns:
+            A populated Schedule instance.
+        """
+        pass
+
+
+# ---------------------------------------------------------------------------
+# Owner  (root — single entry point for the entire app session)
 # ---------------------------------------------------------------------------
 
 @dataclass
-class PawPal:
-    """
-    Root application registry.
-    Manages all owners and schedules and provides top-level lookup methods.
+class Owner:
+    """The root of the application. One Owner per session.
+
+    Responsibility: manage the user profile, pets, tasks, and schedule history.
+    Delegates scheduling work to the injected Scheduler (DIP).
     """
 
-    owners: list[Owner] = field(default_factory=list)
+    name: str
+    available_minutes: int = 120
+    preferences: list[str] = field(default_factory=list)
+    pets: list[Pet] = field(default_factory=list)
     schedules: list[Schedule] = field(default_factory=list)
+    scheduler: Scheduler = field(default_factory=Scheduler)
+    id: str = field(default_factory=lambda: str(uuid.uuid4()), init=False)
 
-    # --- Owner management ---
+    # --- Pet management ---
 
-    def add_owner(self, owner: Owner) -> None:
-        """Registers a new owner."""
-        pass
+    def add_pet(self, pet: Pet) -> None:
+        """Adds a pet."""
+        self.pets.append(pet)
 
-    def remove_owner(self, owner_id: str) -> None:
-        """Removes an owner by ID."""
-        pass
+    def remove_pet(self, pet_id: str) -> None:
+        """Removes a pet by ID. Silently ignores unknown IDs."""
+        self.pets = [p for p in self.pets if p.id != pet_id]
 
-    def get_owners(self) -> list[Owner]:
-        """Returns all registered owners."""
-        pass
-
-    def get_owner(self, owner_id: str) -> Optional[Owner]:
-        """Returns a specific owner by ID, or None if not found."""
-        pass
-
-    # --- Pet lookup (via owner) ---
-
-    def get_pets(self, owner_id: str) -> list[Pet]:
-        """Returns all pets belonging to a specific owner."""
-        pass
+    def get_pets(self) -> list[Pet]:
+        """Returns all pets."""
+        return list(self.pets)
 
     def get_pet(self, pet_id: str) -> Optional[Pet]:
-        """Returns a specific pet by ID across all owners, or None if not found."""
+        """Returns a specific pet by ID, or None if not found."""
+        return next((p for p in self.pets if p.id == pet_id), None)
+
+    def update_pet(self, pet_id: str, **kwargs) -> None:
+        """Updates attributes of an existing pet by ID."""
+        pass
+
+    # --- Task management ---
+
+    def create_task(self, pet_id: str, title: str, duration_minutes: int,
+                    priority: str = "medium", category: str = "other",
+                    notes: str = "") -> Task:
+        """Creates a Task for a specific pet, sets pet_id, and appends it.
+
+        Raises:
+            ValueError: if pet_id is not found among this owner's pets.
+        """
+        pass
+
+    def remove_task(self, task_id: str) -> None:
+        """Removes a task by ID from whichever pet holds it."""
+        pass
+
+    def get_tasks(self, pet_id: str) -> list[Task]:
+        """Returns all tasks for a specific pet."""
+        pass
+
+    def get_task(self, task_id: str) -> Optional[Task]:
+        """Returns a specific task by ID across all pets, or None if not found."""
+        pass
+
+    def update_task(self, task_id: str, **kwargs) -> None:
+        """Updates attributes of an existing task by ID."""
         pass
 
     # --- Schedule management ---
 
-    def add_schedule(self, schedule: Schedule) -> None:
-        """Stores a generated schedule."""
+    def build_schedule(self, pet_id: str, date: str) -> Schedule:
+        """Looks up the pet, runs the scheduler, stores and returns the result.
+
+        Raises:
+            ValueError: if pet_id is not found.
+        """
         pass
 
-    def remove_schedule(self, schedule_id: str) -> None:
-        """Removes a schedule by ID."""
-        pass
-
-    def get_schedules(self, owner_id: str) -> list[Schedule]:
-        """Returns all schedules belonging to a specific owner."""
+    def get_schedules(self, pet_id: str) -> list[Schedule]:
+        """Returns all schedules for a specific pet."""
         pass
 
     def get_schedule(self, schedule_id: str) -> Optional[Schedule]:
         """Returns a specific schedule by ID, or None if not found."""
+        pass
+
+    def remove_schedule(self, schedule_id: str) -> None:
+        """Removes a schedule by ID. Silently ignores unknown IDs."""
         pass
