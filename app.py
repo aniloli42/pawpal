@@ -207,7 +207,10 @@ if tasks:
             label_visibility="collapsed",
         )
         if new_status != task.status:
-            task.set_status(new_status, on_date=str(date.today()))
+            if new_status == "completed":
+                owner.complete_task(task.id, on_date=str(date.today()))
+            else:
+                task.set_status(new_status)
             st.rerun()
         if col3.button("🗑", key=f"remove_task_{task.id}"):
             owner.remove_task(task.id)

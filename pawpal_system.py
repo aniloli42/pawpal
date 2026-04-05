@@ -356,6 +356,22 @@ class Scheduler:
     # ------------------------------------------------------------------ #
 
     @staticmethod
+    def detect_time_conflicts(tasks: list[Task]) -> list[str]:
+        """A lightweight conflict detection strategy that returns warning messages
+        if two or more tasks are scheduled at the exact same 'time'."""
+        warnings = []
+        time_map: dict[str, list[str]] = {}
+        for task in tasks:
+            time_map.setdefault(task.time, []).append(f"{task.title}")
+            
+        for time_str, titles in time_map.items():
+            if len(titles) > 1:
+                warnings.append(
+                    f"⚠️ Conflict at {time_str}: {', '.join(titles)} are scheduled at the same time!"
+                )
+        return warnings
+
+    @staticmethod
     def sort_by_time(tasks: list[Task]) -> list[Task]:
         """Sorts tasks by their time attribute in 'HH:MM' format."""
         # Python's sorted() uses lexical sorting for strings. 
