@@ -8,7 +8,7 @@ Session state:
 
 from datetime import date
 import streamlit as st
-from pawpal_system import Owner, Pet
+from pawpal_system import Owner, Pet, Scheduler
 
 # ---------------------------------------------------------------------------
 # Page config
@@ -167,8 +167,9 @@ filter_status = fc1.selectbox(
 )
 sort_by = fc2.selectbox(
     "Sort by",
-    ["priority", "duration", "category", "title"],
+    ["priority", "duration", "category", "title", "time (chronological)"],
     key="sort_by",
+    help="'time (chronological)' uses Scheduler.sort_by_time() to order tasks by their HH:MM clock time.",
 )
 show_all_pets = fc3.checkbox(
     "Show all pets", value=False, key="all_pets_tasks",
@@ -178,9 +179,13 @@ show_all_pets = fc3.checkbox(
 status_filter = None if filter_status == "all" else filter_status
 pet_id_filter = None if show_all_pets else selected_pet.id
 
-tasks = owner.get_filtered_tasks(
-    pet_id=pet_id_filter, status=status_filter, sort_by=sort_by
-)
+# Route to Scheduler.sort_by_time() when chronological sort is selected;
+# otherwise use the standard priority/duration/category/title filter.
+if sort_by == "time (chronological)":
+    raw_tasks = owner.get_filtered_tasks(pet_id=pet_id_filter, status=status_filter, sort_by="priority")
+    tasks = Scheduler.sort_by_time(raw_tasks)
+else:
+    tasks = owner.get_filtered_tasks(pet_id=pet_id_filter, status=status_filter, sort_by=sort_by)
 
 # --- Task list ---
 if tasks:
@@ -217,6 +222,23 @@ if tasks:
             st.rerun()
 else:
     st.info("No tasks match the current filter.")
+
+# ---------------------------------------------------------------------------
+# Live Conflict Detection — runs on every render, warns before scheduling
+# ---------------------------------------------------------------------------
+
+all_pet_tasks = owner.get_filtered_tasks(pet_id=selected_pet.id, status="pending")
+time_conflicts = Scheduler.detect_time_conflicts(all_pet_tasks)
+
+if time_conflicts:
+    st.markdown("---")
+    st.markdown("#### ⚠️ Scheduling Conflicts Detected")
+    st.caption(
+        f"The following pending tasks for **{selected_pet.name}** share the same "
+        "start time. Only one can happen at that hour — consider adjusting them before generating a schedule."
+    )
+    for conflict_msg in time_conflicts:
+        st.warning(conflict_msg, icon="⚠️")
 
 st.divider()
 
@@ -255,27 +277,54 @@ if st.button("Generate schedule 🗓", type="primary"):
             for msg in schedule.conflicts:
                 st.warning(msg)
 
-        # --- Scheduled tasks with time slots ---
+        # --- Scheduled tasks — timeline table ---
         if schedule.slots:
-            st.markdown("#### ✅ Scheduled")
-            for slot in schedule.slots:
-                recur_badge = (f" 🔁 `{slot.task.recurrence}`"
-                               if slot.task.recurrence != "none" else "")
-                pref_badge  = (f" 🕐 `{slot.task.preferred_time_slot}`"
-                               if slot.task.preferred_time_slot != "any" else "")
-                st.markdown(
-                    f"- `{slot.time_label(schedule.start_hour)}` **{slot.task.title}** — "
-                    f"{slot.task.duration_minutes} min "
-                    f"[{slot.task.priority} · {slot.task.category}]{recur_badge}{pref_badge}"
-                )
+            st.markdown("#### ✅ Scheduled Tasks")
+            PRIORITY_ICON = {"high": "🔴", "medium": "🟡", "low": "🟢"}
+            RECUR_LABEL   = {"daily": "🔁 Daily", "weekly": "🔁 Weekly",
+                             "weekdays": "🔁 Weekdays", "none": "—"}
+            table_rows = [
+                {
+                    "Time":      slot.time_label(schedule.start_hour),
+                    "Task":      slot.task.title,
+                    "Duration":  f"{slot.task.duration_minutes} min",
+                    "Priority":  f"{PRIORITY_ICON.get(slot.task.priority, '')} {slot.task.priority.capitalize()}",
+                    "Category":  slot.task.category.capitalize(),
+                    "Recurrence": RECUR_LABEL.get(slot.task.recurrence, "—"),
+                    "Slot Pref": slot.task.preferred_time_slot.capitalize(),
+                }
+                for slot in schedule.slots
+            ]
+            st.table(table_rows)
+
+        # --- Conflict warnings — detailed callout cards ---
+        if schedule.conflicts:
+            st.markdown("#### ⚠️ Conflicts")
+            st.caption(
+                "These issues were detected while building the schedule. "
+                "Resolve them to make better use of your time budget."
+            )
+            for msg in schedule.conflicts:
+                # High-priority overflow gets a more urgent colour
+                if "High-priority" in msg or "high-priority" in msg:
+                    st.error(msg, icon="🚨")
+                else:
+                    st.warning(msg, icon="⚠️")
 
         # --- Unscheduled (skipped) tasks ---
         if schedule.unscheduled_tasks:
-            st.markdown("#### ⏭ Skipped (didn't fit in time budget)")
-            for task in schedule.unscheduled_tasks:
-                st.markdown(
-                    f"- **{task.title}** — {task.duration_minutes} min [{task.priority} priority]"
-                )
+            st.markdown("#### ⏭ Skipped Tasks")
+            st.caption("These tasks didn't fit within your daily time budget.")
+            skip_rows = [
+                {
+                    "Task":     t.title,
+                    "Duration": f"{t.duration_minutes} min",
+                    "Priority": t.priority.capitalize(),
+                    "Category": t.category.capitalize(),
+                }
+                for t in schedule.unscheduled_tasks
+            ]
+            st.table(skip_rows)
 
-        with st.expander("Full explanation"):
+        with st.expander("📋 Full schedule explanation"):
             st.text(schedule.explain())
